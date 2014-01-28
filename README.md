@@ -1,9 +1,9 @@
-PyDF
+#PyDF
 ============
 Open source python library for reading and writing pdf files.
 
 
-Goals
+##Goals
 -----------
 Key: 
 in progress (-)
@@ -26,7 +26,7 @@ ongoing (~)
 	* [ ] python object to pdf object converter
 	* [+] pdf object to python object converter
 
-____Info_____
+####Info
 
 A work in progress, contributions, suggestions, collaborations,
 Musical Solos, Bug reports, and sea stories welcome.
