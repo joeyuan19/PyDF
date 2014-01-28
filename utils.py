@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 import re
 import zlib
+
 class PDFFormatError(Exception):
 	pass
 
 class PDFOperationError(Exception):
 	pass
 
+PDF_TYPE_INVALID = -1
 PDF_TYPE_REF = 0
 PDF_TYPE_NUM = 1
 PDF_TYPE_NULL = 2
@@ -92,19 +94,92 @@ def _get_pdf_obj_type(obj):
 		obj_type = re.findall(r'^/.*?$',obj)
 		if len(obj_type) > 0:
 			return PDF_TYPE_NAME
-	raise PDFOperationError('Invalid PDF object: ' + str(obj)  )
+	return PDF_TYPE_INVALID
 	
-def py_obj_to_pdf_obj(py_obj):
-	t = type(py_obj)
-	if isinstance(py_obj,basestring):
-		pass
-	if t is str:
-		pass
+def py_obj_to_pdf_obj(py_obj,obj_type=None,PDFObject=None):
+	if PDFObject is not None:
+		if isinstance(py_obj,PDFObject):
+			if py_obj.is_trailer:
+				pdf_obj = "trailer\n"+_py_obj_to_pdf_obj(py_obj.value)
+			else:
+				pdf_obj = str(py_obj.obj_id) + ' ' + str(py_obj.gen_id) + ' obj\n'
+				pdf_obj += _py_obj_to_pdf_obj(py_obj.value) + '\n'
+				pdf_obj += 'endobj'
+		else:
+			pdf_obj = _py_obj_to_pdf_obj(py_obj)
+	else:
+		pdf_obj = _py_obj_to_pdf_obj(py_obj)
+	return pdf_obj
+		
+
+def _py_obj_to_pdf_obj(py_obj):
+	if isinstance(py_obj,dict):
+		if 'stream' in py_obj:
+			pdf_obj = py_dict_to_pdf_stream(py_obj)
+		else:
+			pdf_obj = py_dict_to_pdf_dict(py_obj)
+	elif isinstance(py_obj,list):
+		pdf_obj = py_array_to_pdf_array(py_obj)
+	elif isinstance(py_obj,bool):
+		pdf_obj = py_bool_to_pdf_bool(py_obj)
+	elif isinstance(py_obj,(int,float,complex,long)):
+		pdf_obj = py_num_to_pdf_num(py_obj)
+	elif isinstance(py_obj,basestring):
+		pdf_obj = py_str_to_pdf_str(py_obj)
+	else:
+		try:
+			pdf_obj = py_obj.indirect_ref()
+		except:
+			pdf_obj = str(py_obj)
+	return pdf_obj
+
+def py_dict_to_pdf_stream(py_dict):
+	return py_dict_to_pdf_dict(py_dict,True)
+
+def py_dict_to_pdf_dict(py_dict,is_stream=False):
+	buf = "<< "
+	for key in py_dict:
+		if is_stream and key != 'stream' or key != 'stream_decoded':
+			buf += key + " " + py_obj_to_pdf_obj(py_dict[key]) + " "
+	buf += ">>"
+	if is_stream:
+		buf += "\nstream\n"
+		buf += py_dict['stream'] + "\n"
+		buf += "endstream"
+	return buf
+
+def py_array_to_pdf_array(py_arr):
+	buf = "[ "
+	for item in py_arr:
+		buf += py_obj_to_pdf_obj(item) + " "
+	buf += "]"
+	return buf
+
+def py_bool_to_pdf_bool(py_bool):
+	if py_bool:
+		return "true"
+	else:
+		return "false"
+
+def py_num_to_pdf_num(py_num):
+	return str(py_num)
+
+def py_str_to_pdf_str(py_str):
+	if py_str.startswith('<') and py_str.endswith('>'):
+		return py_str
+	elif py_str.startswith('(') and py_str.endswith(')'):
+		return py_str
+	elif py_str.startswith('/'):
+		return py_str
+	else:
+		if get_pdf_obj_type(py_str) == PDF_TYPE_REF:
+			return py_str
+		return '(' + py_str + ')'
 
 def pdf_obj_to_py_obj(pdf_obj):
 	obj_type = pdf_obj.obj_type
 	content = pdf_obj.content
-	return _pdf_obj_to_py_obj(content,obj_type=obj_type)
+	return _pdf_obj_to_py_obj(content,obj_type=None)
 
 def _pdf_obj_to_py_obj(pdf_obj,obj_type=None):
 	if obj_type is None:
@@ -134,20 +209,6 @@ def _pdf_obj_to_py_obj(pdf_obj,obj_type=None):
 	else:
 		return value
 
-def parse_obj_id(obj):
-	matches = re.findall(r'(\d+ \d+) (R|obj)',obj)
-	if len(matches) > 0:
-		try:
-			return int(matches[0][0])
-		except:
-			pass
-	return None
-
-def get_obj_content(obj):
-	matches = re.findall(r'obj(.*)endobj',obj,re.S)
-	if len(matches) > 0:
-		return matches[0].strip()
-	return obj
 
 def pdf_ref_to_py_str(ref):
 	return ref
@@ -247,6 +308,7 @@ def pdf_array_to_py_array(a):
 					if str_buf.endswith('> '):
 						str_buf = str_buf[:-1]
 						break
+				py_a.append(_pdf_obj_to_py_obj(str_buf))
 			else:
 				buf.append(a[0])
 				if len(buf) >= 3:
@@ -309,12 +371,12 @@ def stream_decode(stream,filters):
 	_stream = stream
 	if isinstance(filters,basestring):
 		_filter = filters
-		print [_stream]
 		if _filter == "/FlateDecode":
-			print len(_stream.strip("\r").strip("\n"))
 			_stream = zlib.decompress(_stream.strip("\r").strip("\n"))
 		elif _filter == "/ASCIIHexDecode":
 			_stream = binascii.unhexlify(_stream.replace("\r","").replace("\n","").replace(" ","").strip("<").strip(">"))
+		else:
+			print "other decode"
 	else:
 		for _filter in filters:
 			_stream = stream_decode(_stream,_filter)
@@ -326,7 +388,7 @@ def remove_comments(pdf_text):
 
 def splitstream(pdf_text):
 	temp = pdf_text.strip()
-	stream_regex = re.compile(r'stream.*endstream$',re.S)
+	stream_regex = re.compile(r'stream.*endstream',re.S)
 	index = -1
 	for i in stream_regex.finditer(pdf_text):
 		index = i.start()
@@ -341,24 +403,20 @@ def assert_pdf_ext(filename):
 	else:
 		return filename + '.pdf'
 
+def parse_obj_id(obj):
+	matches = re.findall(r'(\d+ \d+) (R|obj)',obj)
+	if len(matches) > 0:
+		try:
+			return int(matches[0][0])
+		except:
+			pass
+	return None
+
+def get_obj_content(obj):
+	matches = re.findall(r'obj(.*)endobj',obj,re.S)
+	if len(matches) > 0:
+		return matches[0].strip()
+	return obj
 
 if __name__ == '__main__':
-	test ="""
-4 0 obj
-<< /Length 5 0 R /Filter /FlateDecode >>
-stream
-x]Nª¬0‹˚«£%YRßØ¥+àÖ≠í%⁄)Ç©H%ˇ/ë&t €“˘d›ùgÙò°?ä|ï®[£L”xﬂq≈˘…iX
-Ì¨◊ê¢&ÚeÈÜZUWâùp‰ÂJ§¡E—ä<!g÷J√ü∏Al∂ªΩÙL§ŸaÉL%F%9sxÓ7HWÖ2]˘MCL[ΩW¸ÀôL¯â‡◊ Ó∫1Ò
-endstream
-endobj
-"""
-
-	compare = """\nx\x01]N\xbb\x0e\xc20\x0c\xdc\xfb\x15\xc7\xa3%YR\xa7\xaf\xb4+\x88\x85\xad\x92%\x06\xda)\x82\x01\xa9H%\xff/\x91&t\x00\xdb\xd2\xf9d\xdd\x9dg\xf4\x98\xa1\x0b?\x8a|\x95\xa8[\xa3L\x03\xd3\x04x\xdfq\xc5\x0b\xf9\xc9iX\x07\n\xed\xac\xd7\x90\xa2&\xf2e\xe9\x08\x86ZUW\x89\x9dp\xe4\xe5J\xa4\xc1\x16\x05E\xd1\x8a<!g\xd6J\xc3\x9f\x1f\xb8Al\xb6\xbb\xbd\xf4L\xa4\xd9a\x10\x83L%F\xf0%9sx\xee7HW\x852]\xf9MCL[\xbdW\xfc\xcb\x10\x99L\xf8\x89\xe0\xd7\x7f\x00\xee\xba1\xf1\n"""
-
-	print len(compare)
-
-	print "Object to test:",[test]
-	print "Object Length:",len(test)
-	print
-	print _pdf_obj_to_py_obj(test)
-
+	pass # used for testing
