@@ -1,5 +1,4 @@
 #PyDF
-============
 Open source python library for reading and writing pdf files.
 
 
